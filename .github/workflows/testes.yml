@@ -1,0 +1,77 @@
+name: Testes e backtest
+
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      dias:
+        description: "Dias de histórico para o backtest (3 a 60)"
+        default: "30"
+
+permissions:
+  contents: read
+
+jobs:
+  testes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependências
+        run: pip install -r requirements-dev.txt
+
+      - name: Testes automatizados
+        run: python -m pytest -v
+
+      - name: Servidor sobe e responde (mesmo comando do Render)
+        env:
+          DATA_DIR: ${{ runner.temp }}/dados
+          DASHBOARD_PASSWORD: teste-ci
+          POLL_SECONDS: "5"
+          PORT: "8000"
+        run: |
+          uvicorn app.web:create_app --factory --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips "*" > servidor.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8000/health > /dev/null && break; sleep 1; done
+          sleep 25
+          echo "Resposta de /health:"; curl -s http://127.0.0.1:8000/health; echo
+          curl -sf http://127.0.0.1:8000/health > /dev/null
+          echo "--- log do servidor ---"; cat servidor.log
+
+      - name: Backtest com dados reais
+        continue-on-error: true
+        env:
+          DIAS: ${{ github.event.inputs.dias || '30' }}
+        run: |
+          python -m app.backtest --days "$DIAS" --json relatorio_backtest.json --markdown relatorio_backtest.md
+          cat relatorio_backtest.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: relatorio-backtest
+          path: relatorio_backtest.*
+          if-no-files-found: ignore
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Construir e testar a imagem Docker
+        run: |
+          docker build -t robo .
+          docker run -d --name robo -p 8000:8000 -e DASHBOARD_PASSWORD=teste robo
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8000/health && break; sleep 1; done
+          echo; curl -sf http://127.0.0.1:8000/health
+          docker logs robo | tail -20
+          if docker run --rm -e PAPER_TRADING=false robo python -c "from app.config import load_settings; load_settings()"; then
+            echo "ERRO: deveria recusar PAPER_TRADING=false"; exit 1
+          else
+            echo "OK: recusou desligar o paper trading"
+          fi

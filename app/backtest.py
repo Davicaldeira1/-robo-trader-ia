@@ -1,0 +1,318 @@
+"""Backtest com validação em dados novos (walk-forward), sem vazamento do futuro.
+
+Como funciona:
+1. Baixa candles reais de 5m e 15m (histórico público).
+2. Divide o período em duas partes pelo TEMPO:
+   - Parte 1 ("dentro da amostra", 70%): testa algumas combinações de
+     stop/alvo e escolhe a melhor.
+   - Parte 2 ("fora da amostra", 30%): testa a escolha em dados que NÃO
+     foram usados para escolher — é a parte que mais se aproxima do futuro.
+3. Toda decisão usa só candles já fechados; a ordem é executada na abertura
+   do candle seguinte; taxas e slippage são descontados em cada execução.
+
+Uso (linha de comando):
+    python -m app.backtest --days 30
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import sys
+import time
+from dataclasses import asdict, dataclass, replace
+from datetime import datetime, timezone
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+from .analysis import Analyzer
+from .config import Settings, TradingParams, load_settings
+from .market_data import MarketData
+from .metrics import json_safe, max_drawdown, trade_stats
+from .strategy import BUY, SELL, WAIT, Signal
+from .trader import Candle, PaperTrader, TraderState
+
+log = logging.getLogger(__name__)
+
+GRID = [(atr, r) for atr in (1.0, 1.5, 2.0, 3.0) for r in (1.5, 2.0, 3.0)]
+MIN_TRADES_TO_SELECT = 5
+
+
+@dataclass
+class BacktestResult:
+    params: dict
+    start_ms: int
+    end_ms: int
+    candles: int
+    trades: list[dict]
+    equity: list[tuple[int, float]]
+    metrics: dict
+
+
+def iso(ms: int) -> str:
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def precompute_signals(analyzer: Analyzer) -> list[Signal]:
+    """Sinal de cada candle usando apenas dados até ele (o teste de vazamento confere isso)."""
+    return [analyzer.signal(i) for i in range(len(analyzer))]
+
+
+def simulate(analyzer: Analyzer, signals: list[Signal], params: TradingParams,
+             start_ms: int, end_ms: int) -> BacktestResult:
+    df = analyzer.ind5
+    times = analyzer.close_time5
+    idx = np.flatnonzero((times >= start_ms) & (times <= end_ms))
+    if len(idx) == 0:
+        raise ValueError("Período de teste sem candles.")
+    rows = df[["open_time", "open", "high", "low", "close", "volume", "close_time"]].to_numpy()
+    trader = PaperTrader(params, TraderState.new(params.initial_balance))
+    trades: list[dict] = []
+    equity: list[tuple[int, float]] = []
+    halts = 0
+    last_i = int(idx[-1])
+    for i in idx:
+        i = int(i)
+        r = rows[i]
+        candle = Candle(int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5]), int(r[6]))
+        signal_fn = (lambda i=i: signals[i]) if i < last_i else None  # o último sinal não teria execução
+        for ev in trader.process_candle(candle, signal_fn):
+            if ev["type"] == "closed":
+                trades.append(ev["trade"])
+            elif ev["type"] == "halted":
+                halts += 1
+        equity.append((candle.close_time, trader.equity(candle.close)))
+    if trader.s.position is not None:
+        last_close = float(rows[last_i][4])
+        for ev in trader.close_now(last_close, int(rows[last_i][6]), "Fim do período de teste"):
+            trades.append(ev["trade"])
+        equity[-1] = (equity[-1][0], trader.equity(last_close))
+
+    final = equity[-1][1]
+    dd_abs, dd_pct = max_drawdown([params.initial_balance] + [e for _, e in equity])
+    first_open, last_close = float(rows[int(idx[0])][1]), float(rows[last_i][4])
+    metrics = trade_stats(trades) | {
+        "initial_balance": params.initial_balance,
+        "final_equity": final,
+        "return_pct": (final / params.initial_balance - 1) * 100,
+        "max_drawdown_pct": dd_pct * 100,
+        "max_drawdown_abs": dd_abs,
+        "daily_halts": halts,
+        "buy_hold_pct": (last_close / first_open - 1) * 100,
+        "fees_paid": trader.s.fees_paid,
+    }
+    return BacktestResult(asdict(params), int(times[idx[0]]), int(times[last_i]), len(idx),
+                          trades, equity, metrics)
+
+
+def _downsample(equity: list[tuple[int, float]], points: int = 300) -> list[dict]:
+    step = max(1, len(equity) // points)
+    sampled = equity[::step]
+    if sampled[-1] != equity[-1]:
+        sampled.append(equity[-1])
+    return [{"time": t // 1000, "value": round(v, 2)} for t, v in sampled]
+
+
+def _summary(result: BacktestResult) -> dict:
+    return {
+        "inicio": iso(result.start_ms),
+        "fim": iso(result.end_ms),
+        "candles": result.candles,
+        "parametros": {"atr_stop_mult": result.params["atr_stop_mult"],
+                       "take_profit_r": result.params["take_profit_r"]},
+        "metricas": result.metrics,
+        "curva": _downsample(result.equity),
+        "operacoes": result.trades[-50:],
+    }
+
+
+def walk_forward(df5: pd.DataFrame, df15: pd.DataFrame, base: TradingParams,
+                 split: float = 0.7, grid=GRID) -> dict:
+    t0 = time.time()
+    analyzer = Analyzer(df5, df15)
+    signals = precompute_signals(analyzer)
+    usable = [i for i, s in enumerate(signals) if s.data_ok]
+    if len(usable) < 50:
+        raise ValueError("Dados insuficientes para o backtest (menos de 50 candles analisáveis).")
+    start_ms = int(analyzer.close_time5[usable[0]])
+    end_ms = int(analyzer.close_time5[-1])
+    split_ms = int(start_ms + split * (end_ms - start_ms))
+
+    in_sample = []
+    for atr_mult, tp_r in grid:
+        params = replace(base, atr_stop_mult=atr_mult, take_profit_r=tp_r)
+        res = simulate(analyzer, signals, params, start_ms, split_ms - 1)
+        in_sample.append((params, res))
+
+    eligible = [(p, r) for p, r in in_sample if r.metrics["trades"] >= MIN_TRADES_TO_SELECT]
+    notes = []
+    if eligible:
+        chosen, chosen_is = max(eligible, key=lambda pr: pr[1].metrics["return_pct"])
+    else:
+        chosen = base
+        chosen_is = simulate(analyzer, signals, base, start_ms, split_ms - 1)
+        notes.append(f"Menos de {MIN_TRADES_TO_SELECT} operações por combinação na parte 1: "
+                     "mantidos os parâmetros padrão (sem otimização).")
+
+    oos_chosen = simulate(analyzer, signals, chosen, split_ms, end_ms)
+    oos_default = simulate(analyzer, signals, base, split_ms, end_ms)
+
+    counts = {a: 0 for a in (BUY, SELL, WAIT)}
+    for s in signals:
+        counts[s.action] += 1
+    insufficient = sum(1 for s in signals if not s.data_ok)
+    total_oos = oos_chosen.metrics["trades"]
+    if total_oos < 30:
+        notes.append(f"Apenas {total_oos} operações fora da amostra: amostra pequena, "
+                     "resultado pouco confiável estatisticamente.")
+    notes.append("Resultados passados não garantem resultados futuros.")
+
+    report = {
+        "gerado_em": iso(int(time.time() * 1000)),
+        "periodo": {"inicio": iso(int(analyzer.close_time5[0])), "fim": iso(end_ms),
+                    "inicio_analise": iso(start_ms), "divisao": iso(split_ms)},
+        "custos": {"taxa_por_execucao_pct": base.fee_rate * 100, "slippage_pct": base.slippage_rate * 100},
+        "regras_de_risco": {"risco_por_operacao_pct": base.risk_per_trade * 100,
+                            "perda_diaria_max_pct": base.daily_loss_limit * 100,
+                            "saldo_inicial": base.initial_balance},
+        "sinais": {"compra": counts[BUY], "venda": counts[SELL], "aguardar": counts[WAIT],
+                   "dados_insuficientes": insufficient},
+        "dentro_da_amostra": [
+            {"atr_stop_mult": p.atr_stop_mult, "take_profit_r": p.take_profit_r,
+             "operacoes": r.metrics["trades"], "retorno_pct": r.metrics["return_pct"],
+             "taxa_acerto": r.metrics["win_rate"], "drawdown_pct": r.metrics["max_drawdown_pct"]}
+            for p, r in in_sample
+        ],
+        "escolhido": {"atr_stop_mult": chosen.atr_stop_mult, "take_profit_r": chosen.take_profit_r},
+        "parte1_escolhido": _summary(chosen_is),
+        "parte2_fora_da_amostra": _summary(oos_chosen),
+        "parte2_parametros_padrao": _summary(oos_default),
+        "avisos": notes,
+        "duracao_s": round(time.time() - t0, 1),
+    }
+    return json_safe(report)
+
+
+def fetch_history(settings: Settings, days: float, market: MarketData | None = None):
+    market = market or MarketData(settings.data_providers, settings.symbol)
+    end_ms = int(time.time() * 1000)
+    # +2 dias de aquecimento para os indicadores (EMA50 do 15m precisa de histórico)
+    start_ms = end_ms - int((days + 2) * 86_400_000)
+    provider, frames = market.fetch_history([settings.entry_interval, settings.trend_interval], start_ms, end_ms)
+    # Remove o candle que ainda está em andamento
+    for k, df in frames.items():
+        frames[k] = df[df["close_time"] < end_ms].reset_index(drop=True)
+    return provider, frames
+
+
+def run_full_backtest(settings: Settings, days: float = 30, split: float = 0.7,
+                      market: MarketData | None = None) -> dict:
+    provider, frames = fetch_history(settings, days, market)
+    report = walk_forward(frames[settings.entry_interval], frames[settings.trend_interval],
+                          settings.trading, split)
+    report["fonte_de_dados"] = provider
+    report["dias"] = days
+    report["candles_5m"] = len(frames[settings.entry_interval])
+    report["candles_15m"] = len(frames[settings.trend_interval])
+    return report
+
+
+def _fmt_pct(x) -> str:
+    return "—" if x is None else f"{x:+.2f}%"
+
+
+def format_markdown(report: dict) -> str:
+    def block(title: str, part: dict) -> list[str]:
+        m = part["metricas"]
+        wr = "—" if m["win_rate"] is None else f"{m['win_rate']:.1f}%"
+        pf = "—" if m["profit_factor"] is None else f"{m['profit_factor']:.2f}"
+        return [
+            f"### {title}",
+            f"Período: {part['inicio']} → {part['fim']} ({part['candles']} candles de 5m)  ",
+            f"Parâmetros: stop = {part['parametros']['atr_stop_mult']}× ATR, "
+            f"alvo = {part['parametros']['take_profit_r']}× o risco",
+            "",
+            "| Métrica | Valor |",
+            "|---|---|",
+            f"| Saldo final | US$ {m['final_equity']:.2f} (início US$ {m['initial_balance']:.2f}) |",
+            f"| Retorno | {_fmt_pct(m['return_pct'])} |",
+            f"| Comprar e segurar BTC no mesmo período | {_fmt_pct(m['buy_hold_pct'])} |",
+            f"| Operações | {m['trades']} ({m['wins']} ganhos / {m['losses']} perdas) |",
+            f"| Taxa de acerto | {wr} |",
+            f"| Fator de lucro | {pf} |",
+            f"| Drawdown máximo | {m['max_drawdown_pct']:.2f}% (US$ {m['max_drawdown_abs']:.2f}) |",
+            f"| Taxas pagas | US$ {m['fees_paid']:.2f} |",
+            f"| Dias interrompidos pela trava de 3% | {m['daily_halts']} |",
+            "",
+        ]
+
+    s = report["sinais"]
+    lines = [
+        "## Resultado do backtest (dados reais, dinheiro fictício)",
+        "",
+        f"Fonte: **{report.get('fonte_de_dados', '?')}** · Período: {report['periodo']['inicio']} → "
+        f"{report['periodo']['fim']} · Divisão treino/teste: {report['periodo']['divisao']}",
+        f"Custos simulados: taxa {report['custos']['taxa_por_execucao_pct']:.2f}% por execução + "
+        f"slippage {report['custos']['slippage_pct']:.2f}%",
+        f"Sinais gerados: {s['compra']} COMPRA · {s['venda']} VENDA · {s['aguardar']} AGUARDAR "
+        f"({s['dados_insuficientes']} por dados insuficientes)",
+        "",
+    ]
+    lines += block("Parte 2 — FORA da amostra (dados novos, o teste mais importante)",
+                   report["parte2_fora_da_amostra"])
+    lines += block("Parte 2 — fora da amostra com parâmetros padrão", report["parte2_parametros_padrao"])
+    lines += block("Parte 1 — dentro da amostra (usada para escolher parâmetros)", report["parte1_escolhido"])
+    lines += ["### Combinações testadas na parte 1", "", "| Stop (×ATR) | Alvo (×risco) | Operações | Retorno | Acerto |",
+              "|---|---|---|---|---|"]
+    for row in report["dentro_da_amostra"]:
+        wr = "—" if row["taxa_acerto"] is None else f"{row['taxa_acerto']:.0f}%"
+        lines.append(f"| {row['atr_stop_mult']} | {row['take_profit_r']} | {row['operacoes']} | "
+                     f"{_fmt_pct(row['retorno_pct'])} | {wr} |")
+    lines += ["", "### Avisos"] + [f"- {n}" for n in report["avisos"]]
+    return "\n".join(lines) + "\n"
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Backtest walk-forward do robô BTC/USDT (simulado)")
+    parser.add_argument("--days", type=float, default=30, help="dias de histórico (padrão 30)")
+    parser.add_argument("--split", type=float, default=0.7, help="fração para a parte 1 (padrão 0.7)")
+    parser.add_argument("--json", type=Path, help="salvar relatório completo em JSON")
+    parser.add_argument("--markdown", type=Path, help="salvar resumo em Markdown")
+    parser.add_argument("--csv-dir", type=Path, help="usar/salvar candles em CSV nesta pasta")
+    args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+    settings = load_settings()
+    csv5 = args.csv_dir / "btcusdt_5m.csv" if args.csv_dir else None
+    csv15 = args.csv_dir / "btcusdt_15m.csv" if args.csv_dir else None
+    if csv5 and csv5.exists() and csv15.exists():
+        df5, df15 = pd.read_csv(csv5), pd.read_csv(csv15)
+        provider = "arquivo CSV"
+    else:
+        try:
+            provider, frames = fetch_history(settings, args.days)
+        except Exception as exc:  # noqa: BLE001
+            print(f"ERRO: não foi possível baixar dados históricos: {exc}", file=sys.stderr)
+            return 2
+        df5, df15 = frames[settings.entry_interval], frames[settings.trend_interval]
+        if args.csv_dir:
+            args.csv_dir.mkdir(parents=True, exist_ok=True)
+            df5.to_csv(csv5, index=False)
+            df15.to_csv(csv15, index=False)
+    print(f"Dados: {provider} — {len(df5)} candles de 5m, {len(df15)} candles de 15m")
+    report = walk_forward(df5, df15, settings.trading, args.split)
+    report["fonte_de_dados"] = provider
+    md = format_markdown(report)
+    print(md)
+    if args.json:
+        args.json.write_text(json.dumps(report, ensure_ascii=False, indent=2))
+    if args.markdown:
+        args.markdown.write_text(md)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

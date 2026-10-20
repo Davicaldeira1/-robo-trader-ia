@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Robô BTC">
+  <meta name="theme-color" content="#f9f9f7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
+  <link rel="manifest" href="/static/manifest.json">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+  <link rel="icon" href="/static/icon-192.png">
+  <link rel="stylesheet" href="/static/style.css">
+  <title>Robô BTC</title>
+</head>
+<body>
+  <header class="top">
+    <div class="top-row">
+      <h1>Robô BTC/USDT</h1>
+      <span id="status-pill" class="pill">carregando…</span>
+    </div>
+    <div class="paper-badge" role="note">🛡️ MODO SIMULADO (PAPER TRADING) — dinheiro fictício, nenhuma ordem real</div>
+    <div id="warnings"></div>
+  </header>
+
+  <main>
+    <section class="card signal-card" aria-live="polite">
+      <div class="eyebrow">Sinal agora · entrada 5 min, tendência 15 min</div>
+      <div class="signal-row">
+        <div id="signal-action" class="signal">—</div>
+        <div class="price-box">
+          <div id="price" class="price">—</div>
+          <div id="updated" class="muted small"></div>
+        </div>
+      </div>
+      <p id="signal-summary" class="summary"></p>
+      <details id="checks-box">
+        <summary>Ver as condições analisadas</summary>
+        <ul id="checks" class="checks"></ul>
+      </details>
+    </section>
+
+    <section class="tiles" aria-label="Resumo do saldo fictício">
+      <div class="tile wide">
+        <div class="tile-label">Saldo fictício</div>
+        <div id="equity" class="tile-value big">—</div>
+        <div id="equity-delta" class="tile-sub">—</div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">Resultado hoje</div>
+        <div id="day-pnl" class="tile-value">—</div>
+        <div class="meter" aria-hidden="true"><div id="day-meter"></div></div>
+        <div id="day-limit" class="tile-sub">—</div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">Taxa de acerto</div>
+        <div id="win-rate" class="tile-value">—</div>
+        <div id="win-detail" class="tile-sub">—</div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">Drawdown máximo</div>
+        <div id="drawdown" class="tile-value">—</div>
+        <div id="drawdown-abs" class="tile-sub">—</div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">Lucro / prejuízo realizado</div>
+        <div id="realized" class="tile-value">—</div>
+        <div id="fees" class="tile-sub">—</div>
+      </div>
+    </section>
+
+    <section class="card" id="position-card" hidden>
+      <h2>Posição aberta</h2>
+      <dl id="position" class="kv"></dl>
+      <button id="btn-close" class="btn danger" type="button">Encerrar posição agora</button>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Gráfico BTC/USDT</h2>
+        <div class="seg" role="group" aria-label="Tempo gráfico">
+          <button type="button" data-tf="5m" class="active">5 min</button>
+          <button type="button" data-tf="15m">15 min</button>
+        </div>
+      </div>
+      <div id="chart-legend" class="chart-legend"></div>
+      <div id="chart" class="chart"></div>
+      <p class="muted small">▲ C = compra simulada · ▼ V = venda simulada. Toque no gráfico para ver os valores.</p>
+    </section>
+
+    <section class="card">
+      <h2>Curva do saldo fictício</h2>
+      <div id="equity-legend" class="chart-legend"></div>
+      <div id="equity-chart" class="chart short"></div>
+      <p id="equity-empty" class="muted small" hidden>A curva aparece depois dos primeiros candles processados.</p>
+    </section>
+
+    <section class="card">
+      <h2>Histórico de operações</h2>
+      <div id="trades" class="trades"><p class="muted">Nenhuma operação ainda.</p></div>
+    </section>
+
+    <section class="card">
+      <h2>Backtest (dados históricos reais)</h2>
+      <p class="muted small">Testa a estratégia no passado: a 1ª parte (70%) escolhe stop/alvo e a 2ª parte (30%) testa em dados que não foram usados na escolha. Inclui taxas e slippage.</p>
+      <div class="row">
+        <label for="bt-days">Período</label>
+        <select id="bt-days">
+          <option value="7">7 dias</option>
+          <option value="14">14 dias</option>
+          <option value="30" selected>30 dias</option>
+          <option value="60">60 dias</option>
+        </select>
+        <button id="btn-backtest" class="btn" type="button">Rodar backtest</button>
+      </div>
+      <div id="backtest"></div>
+    </section>
+
+    <section class="card">
+      <h2>Telegram</h2>
+      <p id="tg-status" class="muted small">—</p>
+      <div class="row wrap">
+        <button id="btn-tg-test" class="btn" type="button">Enviar mensagem de teste</button>
+        <button id="btn-tg-chats" class="btn ghost" type="button">Descobrir meu chat_id</button>
+      </div>
+      <div id="tg-result" class="small"></div>
+    </section>
+
+    <section class="card">
+      <h2>Registro de eventos e erros</h2>
+      <ul id="events" class="events"></ul>
+    </section>
+
+    <section class="card">
+      <h2>Regras de risco em uso</h2>
+      <dl id="rules" class="kv"></dl>
+      <p class="small"><a href="/logout">Sair do painel</a></p>
+    </section>
+
+    <footer class="muted small">
+      Simulação educacional. Não é recomendação de investimento.
+      Gráficos: TradingView Lightweight Charts™.
+    </footer>
+  </main>
+
+  <nav class="bottom-bar">
+    <button id="btn-pause" class="btn big" type="button">⏸️ Pausar robô</button>
+  </nav>
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

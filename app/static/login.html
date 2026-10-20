@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Robô BTC">
+  <link rel="manifest" href="/static/manifest.json">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+  <link rel="stylesheet" href="/static/style.css">
+  <title>Entrar · Robô BTC</title>
+</head>
+<body>
+  <main class="login">
+    <form method="post" action="/login">
+      <h1>Robô BTC/USDT</h1>
+      <div class="paper-badge">🛡️ MODO SIMULADO — dinheiro fictício</div>
+      <label for="senha">Senha do painel</label>
+      <input id="senha" name="senha" type="password" autocomplete="current-password" required autofocus>
+      <div id="erro" class="error" role="alert"></div>
+      <button class="btn big" type="submit">Entrar</button>
+      <p class="muted small">A senha é a que você definiu em DASHBOARD_PASSWORD na hospedagem.</p>
+    </form>
+  </main>
+  <script src="/static/login.js"></script>
+</body>
+</html>

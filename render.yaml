@@ -1,0 +1,34 @@
+# Configuração de hospedagem no Render (Blueprint).
+# O Render lê este arquivo e cria o servidor sozinho.
+# Região Frankfurt: a Binance bloqueia servidores nos EUA.
+services:
+  - type: web
+    name: robo-trader-btc
+    runtime: python
+    region: frankfurt
+    plan: starter            # US$ 7/mês: fica ligado 24 h e permite disco persistente
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.web:create_app --factory --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips "*"
+    healthCheckPath: /health
+    autoDeploy: true
+    disk:
+      name: dados-robo
+      mountPath: /var/data   # banco de dados SQLite (saldo, histórico) sobrevive a reinícios
+      sizeGB: 1              # US$ 0,25/mês
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: DATA_DIR
+        value: /var/data
+      - key: PAPER_TRADING
+        value: "true"
+      - key: TIMEZONE
+        value: America/Sao_Paulo
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DASHBOARD_PASSWORD
+        sync: false            # o Render vai pedir para você digitar
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
