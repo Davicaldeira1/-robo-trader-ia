@@ -114,3 +114,4 @@ def test_panel_backtest_tests_the_strategy_that_is_running():
     assert len(rep["dentro_da_amostra"]) == 4
     md = format_markdown(rep)
     assert "Tendência 1h" in md and "sem alvo fixo" in md
+    assert "candles de 1h" in md and "candles de 5m" not in md

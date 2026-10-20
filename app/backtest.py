@@ -239,6 +239,7 @@ def backtest_frames(settings: Settings, frames: dict[str, pd.DataFrame], split: 
     report = walk_forward(None, None, settings.trading, split, grid_for(settings),
                           analysis=build_analysis(settings, frames))
     report["estrategia"] = settings.strategy_info.name
+    report["intervalo"] = settings.entry_interval
     report["candles"] = {k: len(v) for k, v in frames.items()}
     return report
 
@@ -260,13 +261,15 @@ def _fmt_reasons(reasons: dict) -> str:
 
 
 def format_markdown(report: dict) -> str:
+    interval = report.get("intervalo", "5m")
+
     def block(title: str, part: dict) -> list[str]:
         m = part["metricas"]
         wr = "—" if m["win_rate"] is None else f"{m['win_rate']:.1f}%"
         pf = "—" if m["profit_factor"] is None else f"{m['profit_factor']:.2f}"
         return [
             f"### {title}",
-            f"Período: {part['inicio']} → {part['fim']} ({part['candles']} candles de 5m)  ",
+            f"Período: {part['inicio']} → {part['fim']} ({part['candles']} candles de {interval})  ",
             f"Parâmetros: stop = {part['parametros']['atr_stop_mult']}× ATR, "
             f"alvo = {_fmt_target(part['parametros']['take_profit_r'])}",
             "",

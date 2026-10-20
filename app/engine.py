@@ -1,7 +1,7 @@
 """Motor do robô ao vivo (sempre em modo simulado).
 
 A cada ciclo (padrão: 20 s):
-1. Busca candles de 5m e 15m numa fonte pública (com fontes reservas).
+1. Busca candles da estratégia configurada (1h, ou 5m + 15m) numa fonte pública.
 2. Para cada candle de 5m que FECHOU desde o último ciclo: executa ordens
    pendentes, verifica stop/alvo, aplica a trava diária e calcula o sinal.
 3. Grava tudo numa única transação e coloca os alertas na fila do Telegram.
