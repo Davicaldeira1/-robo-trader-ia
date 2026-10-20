@@ -289,9 +289,11 @@ class PaperTrader:
         s.closed_trades += 1
         s.wins += int(pnl > 0)
         s.position = None
+        raw_entry = pos.entry_price / (1 + p.slippage_rate)  # preço antes do slippage
         trade = asdict(pos) | {
             "exit_time": time_ms, "exit_price": fill, "exit_fee": fee, "exit_reason": reason,
             "pnl": pnl, "pnl_pct": pnl / cost * 100 if cost else 0.0,
             "r_multiple": pnl / pos.risk_amount if pos.risk_amount else 0.0,
+            "gross_pnl": pos.qty * (price - raw_entry),  # resultado se não houvesse taxas nem slippage
         }
         return {"type": "closed", "time": time_ms, "trade": trade, "equity": self.equity(price)}

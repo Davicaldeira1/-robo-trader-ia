@@ -308,6 +308,9 @@ function metricRows(m) {
     ["Fator de lucro", m.profit_factor === null ? "—" : num(m.profit_factor, 2)],
     ["Drawdown máximo", num(m.max_drawdown_pct, 2) + "%"],
     ["Taxas pagas", money(m.fees_paid)],
+    ["Resultado antes dos custos", signed(m.gross_pnl)],
+    ["Custos (taxas + slippage)", money(m.costs)],
+    ["Saídas", Object.entries(m.exit_reasons || {}).map(([k, v]) => `${k}: ${v}`).join(" · ") || "—"],
     ["Dias travados (−3%)", String(m.daily_halts)],
   ];
 }
@@ -333,6 +336,7 @@ function renderBacktest(data) {
   if (r) {
     nodes.push(el("p", { class: "small muted", text: `Último backtest: ${r.gerado_em} · fonte ${r.fonte_de_dados} · ${r.dias} dias · taxa ${num(r.custos.taxa_por_execucao_pct, 2)}% + slippage ${num(r.custos.slippage_pct, 2)}% por execução` }));
     nodes.push(btPart("Parte 2 — dados novos (fora da amostra)", r.parte2_fora_da_amostra));
+    if (r.parte2_sem_custos) nodes.push(el("p", { class: "small muted", text: `Diagnóstico: sem taxas nem slippage a parte 2 teria dado ${pct(r.parte2_sem_custos.retorno_pct)} — mostra o peso dos custos (não é um resultado possível).` }));
     nodes.push(btPart("Parte 1 — usada para escolher parâmetros", r.parte1_escolhido));
     nodes.push(el("ul", { class: "small" }, ...r.avisos.map((a) => el("li", { text: a }))));
   } else if (!data.running) {

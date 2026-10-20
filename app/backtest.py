@@ -158,6 +158,8 @@ def walk_forward(df5: pd.DataFrame, df15: pd.DataFrame, base: TradingParams,
 
     oos_chosen = simulate(analyzer, signals, chosen, split_ms, end_ms)
     oos_default = simulate(analyzer, signals, base, split_ms, end_ms)
+    # Diagnóstico (não usado em nenhuma escolha): quanto os custos pesaram na parte 2.
+    oos_free = simulate(analyzer, signals, replace(chosen, fee_rate=0.0, slippage_rate=0.0), split_ms, end_ms)
 
     counts = {a: 0 for a in (BUY, SELL, WAIT)}
     for s in signals:
@@ -189,6 +191,9 @@ def walk_forward(df5: pd.DataFrame, df15: pd.DataFrame, base: TradingParams,
         "parte1_escolhido": _summary(chosen_is),
         "parte2_fora_da_amostra": _summary(oos_chosen),
         "parte2_parametros_padrao": _summary(oos_default),
+        "parte2_sem_custos": {"retorno_pct": oos_free.metrics["return_pct"],
+                              "taxa_acerto": oos_free.metrics["win_rate"],
+                              "operacoes": oos_free.metrics["trades"]},
         "avisos": notes,
         "duracao_s": round(time.time() - t0, 1),
     }
@@ -223,6 +228,14 @@ def _fmt_pct(x) -> str:
     return "—" if x is None else f"{x:+.2f}%"
 
 
+def _fmt_min(x) -> str:
+    return "—" if x is None else f"{x:.0f} min"
+
+
+def _fmt_reasons(reasons: dict) -> str:
+    return " · ".join(f"{k}: {v}" for k, v in sorted(reasons.items(), key=lambda kv: -kv[1])) or "—"
+
+
 def format_markdown(report: dict) -> str:
     def block(title: str, part: dict) -> list[str]:
         m = part["metricas"]
@@ -244,6 +257,10 @@ def format_markdown(report: dict) -> str:
             f"| Fator de lucro | {pf} |",
             f"| Drawdown máximo | {m['max_drawdown_pct']:.2f}% (US$ {m['max_drawdown_abs']:.2f}) |",
             f"| Taxas pagas | US$ {m['fees_paid']:.2f} |",
+            f"| Resultado antes de taxas e slippage | US$ {m['gross_pnl']:.2f} |",
+            f"| Custos totais (taxas + slippage) | US$ {m['costs']:.2f} |",
+            f"| Tempo médio por operação | {_fmt_min(m['avg_holding_min'])} |",
+            f"| Motivos de saída | {_fmt_reasons(m['exit_reasons'])} |",
             f"| Dias interrompidos pela trava de 3% | {m['daily_halts']} |",
             "",
         ]
@@ -262,6 +279,10 @@ def format_markdown(report: dict) -> str:
     ]
     lines += block("Parte 2 — FORA da amostra (dados novos, o teste mais importante)",
                    report["parte2_fora_da_amostra"])
+    free = report["parte2_sem_custos"]
+    lines += [f"_Diagnóstico: sem taxas nem slippage, a parte 2 teria dado {_fmt_pct(free['retorno_pct'])} "
+              f"({free['operacoes']} operações). Isso mostra quanto os custos pesam; não é um resultado possível._",
+              ""]
     lines += block("Parte 2 — fora da amostra com parâmetros padrão", report["parte2_parametros_padrao"])
     lines += block("Parte 1 — dentro da amostra (usada para escolher parâmetros)", report["parte1_escolhido"])
     lines += ["### Combinações testadas na parte 1", "", "| Stop (×ATR) | Alvo (×risco) | Operações | Retorno | Acerto |",

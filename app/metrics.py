@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+from collections import Counter
 
 
 def max_drawdown(equity: list[float]) -> tuple[float, float]:
@@ -36,6 +37,10 @@ def trade_stats(trades: list[dict]) -> dict:
         "avg_loss": -gross_loss / len(losses) if losses else None,
         "expectancy": sum(pnls) / n if n else None,
         "fees": sum(t.get("entry_fee", 0) + t.get("exit_fee", 0) for t in trades),
+        "gross_pnl": sum(t.get("gross_pnl") or 0.0 for t in trades),
+        "costs": sum(t.get("gross_pnl") or 0.0 for t in trades) - sum(pnls),
+        "exit_reasons": dict(Counter(t["exit_reason"].split(" (")[0] for t in trades if t.get("exit_reason"))),
+        "avg_holding_min": (sum((t["exit_time"] - t["entry_time"]) / 60000 for t in trades) / n) if n else None,
     }
 
 

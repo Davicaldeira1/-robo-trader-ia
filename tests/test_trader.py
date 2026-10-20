@@ -45,6 +45,10 @@ def test_stop_loss_loses_exactly_the_planned_risk_including_costs():
     assert closed["pnl"] == pytest.approx(-10.0, abs=1e-6)
     assert tr.s.cash == pytest.approx(1000.0 - 10.0, abs=1e-6)
     assert tr.s.fees_paid == pytest.approx(closed["entry_fee"] + closed["exit_fee"])
+    # resultado bruto = variação de preço sem taxas/slippage; a diferença são os custos
+    raw_entry = trade["entry_price"] / 1.0005
+    assert closed["gross_pnl"] == pytest.approx(trade["qty"] * (trade["stop"] - raw_entry))
+    assert closed["gross_pnl"] - closed["pnl"] > closed["entry_fee"] + closed["exit_fee"]
 
 
 def test_take_profit_gives_about_2r_after_costs():

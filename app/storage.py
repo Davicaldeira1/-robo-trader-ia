@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS trades (
     exit_reason TEXT,
     pnl REAL,
     pnl_pct REAL,
-    r_multiple REAL
+    r_multiple REAL,
+    gross_pnl REAL
 );
 CREATE TABLE IF NOT EXISTS signals (
     time_ms INTEGER PRIMARY KEY,
@@ -75,7 +76,7 @@ CREATE INDEX IF NOT EXISTS idx_outbox_status ON outbox(status);
 
 TRADE_COLUMNS = ("id", "status", "signal_time", "entry_time", "entry_price", "qty", "stop", "take",
                  "entry_fee", "risk_amount", "reason", "exit_time", "exit_price", "exit_fee",
-                 "exit_reason", "pnl", "pnl_pct", "r_multiple")
+                 "exit_reason", "pnl", "pnl_pct", "r_multiple", "gross_pnl")
 
 
 def now_ms() -> int:
