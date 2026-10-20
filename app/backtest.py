@@ -28,8 +28,9 @@ import numpy as np
 import pandas as pd
 
 from .analysis import Analyzer
-from .config import Settings, TradingParams, load_settings
-from .market_data import MarketData
+from .config import NO_TARGET_R, Settings, TradingParams, load_settings
+from .estrategias import build_analysis
+from .market_data import MarketData, interval_ms
 from .metrics import json_safe, max_drawdown, trade_stats
 from .strategy import BUY, SELL, WAIT, Signal
 from .trader import Candle, PaperTrader, TraderState
@@ -37,6 +38,8 @@ from .trader import Candle, PaperTrader, TraderState
 log = logging.getLogger(__name__)
 
 GRID = [(atr, r) for atr in (1.0, 1.5, 2.0, 3.0) for r in (1.5, 2.0, 3.0)]
+# Estratégia de tendência: alvo 100x = sem alvo fixo (sai pelo stop ou pelo cruzamento contrário).
+GRID_TREND = [(2.0, 3.0), (2.0, 100.0), (3.0, 3.0), (3.0, 100.0)]
 MIN_TRADES_TO_SELECT = 5
 
 
@@ -128,10 +131,11 @@ def _summary(result: BacktestResult) -> dict:
     }
 
 
-def walk_forward(df5: pd.DataFrame, df15: pd.DataFrame, base: TradingParams,
-                 split: float = 0.7, grid=GRID) -> dict:
+def walk_forward(df5: pd.DataFrame | None, df15: pd.DataFrame | None, base: TradingParams,
+                 split: float = 0.7, grid=GRID, analysis=None) -> dict:
+    """`analysis` (opcional) é a análise já montada de outra estratégia; sem ela, usa as regras 5m + 15m."""
     t0 = time.time()
-    analyzer = Analyzer(df5, df15)
+    analyzer = analysis if analysis is not None else Analyzer(df5, df15)
     signals = precompute_signals(analyzer)
     usable = [i for i, s in enumerate(signals) if s.data_ok]
     if len(usable) < 50:
@@ -172,9 +176,10 @@ def walk_forward(df5: pd.DataFrame, df15: pd.DataFrame, base: TradingParams,
     if total_oos < 30:
         notes.append(f"Apenas {total_oos} operações fora da amostra: amostra pequena, "
                      "resultado pouco confiável estatisticamente.")
-    notes.append(f"Os parâmetros escolhidos aqui ({chosen.atr_stop_mult}× ATR / {chosen.take_profit_r}×) só "
-                 "aparecem no relatório: o robô ao vivo usa ATR_STOP_MULT e TAKE_PROFIT_R da configuração "
-                 f"(hoje {base.atr_stop_mult}× ATR / {base.take_profit_r}×).")
+    notes.append(f"Os parâmetros escolhidos aqui (stop {chosen.atr_stop_mult}× ATR, alvo "
+                 f"{_fmt_target(chosen.take_profit_r)}) só aparecem no relatório: o robô ao vivo usa "
+                 f"ATR_STOP_MULT e TAKE_PROFIT_R da configuração (hoje stop {base.atr_stop_mult}× ATR, alvo "
+                 f"{_fmt_target(base.take_profit_r)}).")
     notes.append("Resultados passados não garantem resultados futuros.")
 
     report = {
@@ -209,9 +214,10 @@ def walk_forward(df5: pd.DataFrame, df15: pd.DataFrame, base: TradingParams,
 def fetch_history(settings: Settings, days: float, market: MarketData | None = None):
     market = market or MarketData(settings.data_providers, settings.symbol)
     end_ms = int(time.time() * 1000)
-    # +2 dias de aquecimento para os indicadores (EMA50 do 15m precisa de histórico)
-    start_ms = end_ms - int((days + 2) * 86_400_000)
-    provider, frames = market.fetch_history([settings.entry_interval, settings.trend_interval], start_ms, end_ms)
+    # Aquecimento dos indicadores: 110 candles do maior tempo gráfico (mínimo 2 dias)
+    warmup_ms = max(2 * 86_400_000, 110 * max(interval_ms(i) for i in settings.intervals))
+    start_ms = end_ms - int(days * 86_400_000) - warmup_ms
+    provider, frames = market.fetch_history(list(settings.intervals), start_ms, end_ms)
     # Remove o candle que ainda está em andamento
     for k, df in frames.items():
         frames[k] = df[df["close_time"] < end_ms].reset_index(drop=True)
@@ -221,17 +227,28 @@ def fetch_history(settings: Settings, days: float, market: MarketData | None = N
 def run_full_backtest(settings: Settings, days: float = 30, split: float = 0.7,
                       market: MarketData | None = None) -> dict:
     provider, frames = fetch_history(settings, days, market)
-    report = walk_forward(frames[settings.entry_interval], frames[settings.trend_interval],
-                          settings.trading, split)
-    report["fonte_de_dados"] = provider
-    report["dias"] = days
-    report["candles_5m"] = len(frames[settings.entry_interval])
-    report["candles_15m"] = len(frames[settings.trend_interval])
+    return backtest_frames(settings, frames, split) | {"fonte_de_dados": provider, "dias": days}
+
+
+def grid_for(settings: Settings):
+    return GRID_TREND if settings.trend_interval is None else GRID
+
+
+def backtest_frames(settings: Settings, frames: dict[str, pd.DataFrame], split: float = 0.7) -> dict:
+    """Backtest walk-forward da estratégia configurada (a mesma que o robô ao vivo usa)."""
+    report = walk_forward(None, None, settings.trading, split, grid_for(settings),
+                          analysis=build_analysis(settings, frames))
+    report["estrategia"] = settings.strategy_info.name
+    report["candles"] = {k: len(v) for k, v in frames.items()}
     return report
 
 
 def _fmt_pct(x) -> str:
     return "—" if x is None else f"{x:+.2f}%"
+
+
+def _fmt_target(r: float) -> str:
+    return "sem alvo fixo" if r >= NO_TARGET_R else f"{r}× o risco"
 
 
 def _fmt_min(x) -> str:
@@ -251,7 +268,7 @@ def format_markdown(report: dict) -> str:
             f"### {title}",
             f"Período: {part['inicio']} → {part['fim']} ({part['candles']} candles de 5m)  ",
             f"Parâmetros: stop = {part['parametros']['atr_stop_mult']}× ATR, "
-            f"alvo = {part['parametros']['take_profit_r']}× o risco",
+            f"alvo = {_fmt_target(part['parametros']['take_profit_r'])}",
             "",
             "| Métrica | Valor |",
             "|---|---|",
@@ -275,6 +292,7 @@ def format_markdown(report: dict) -> str:
     lines = [
         "## Resultado do backtest (dados reais, dinheiro fictício)",
         "",
+        f"Estratégia: **{report.get('estrategia', 'Regras 5m + 15m')}** · "
         f"Fonte: **{report.get('fonte_de_dados', '?')}** · Período: {report['periodo']['inicio']} → "
         f"{report['periodo']['fim']} · Divisão treino/teste: {report['periodo']['divisao']}",
         f"Custos simulados: taxa {report['custos']['taxa_por_execucao_pct']:.2f}% por execução + "
@@ -291,11 +309,11 @@ def format_markdown(report: dict) -> str:
               ""]
     lines += block("Parte 2 — fora da amostra com parâmetros padrão", report["parte2_parametros_padrao"])
     lines += block("Parte 1 — dentro da amostra (usada para escolher parâmetros)", report["parte1_escolhido"])
-    lines += ["### Combinações testadas na parte 1", "", "| Stop (×ATR) | Alvo (×risco) | Operações | Retorno | Acerto |",
+    lines += ["### Combinações testadas na parte 1", "", "| Stop (×ATR) | Alvo | Operações | Retorno | Acerto |",
               "|---|---|---|---|---|"]
     for row in report["dentro_da_amostra"]:
         wr = "—" if row["taxa_acerto"] is None else f"{row['taxa_acerto']:.0f}%"
-        lines.append(f"| {row['atr_stop_mult']} | {row['take_profit_r']} | {row['operacoes']} | "
+        lines.append(f"| {row['atr_stop_mult']} | {_fmt_target(row['take_profit_r'])} | {row['operacoes']} | "
                      f"{_fmt_pct(row['retorno_pct'])} | {wr} |")
     lines += ["", "### Avisos"] + [f"- {n}" for n in report["avisos"]]
     return "\n".join(lines) + "\n"
@@ -313,10 +331,9 @@ def main(argv: list[str] | None = None) -> int:
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
     settings = load_settings()
-    csv5 = args.csv_dir / "btcusdt_5m.csv" if args.csv_dir else None
-    csv15 = args.csv_dir / "btcusdt_15m.csv" if args.csv_dir else None
-    if csv5 and csv5.exists() and csv15.exists():
-        df5, df15 = pd.read_csv(csv5), pd.read_csv(csv15)
+    csvs = {i: args.csv_dir / f"btcusdt_{i}.csv" for i in settings.intervals} if args.csv_dir else {}
+    if csvs and all(p.exists() for p in csvs.values()):
+        frames = {i: pd.read_csv(p) for i, p in csvs.items()}
         provider = "arquivo CSV"
     else:
         try:
@@ -324,13 +341,13 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"ERRO: não foi possível baixar dados históricos: {exc}", file=sys.stderr)
             return 2
-        df5, df15 = frames[settings.entry_interval], frames[settings.trend_interval]
         if args.csv_dir:
             args.csv_dir.mkdir(parents=True, exist_ok=True)
-            df5.to_csv(csv5, index=False)
-            df15.to_csv(csv15, index=False)
-    print(f"Dados: {provider} — {len(df5)} candles de 5m, {len(df15)} candles de 15m")
-    report = walk_forward(df5, df15, settings.trading, args.split)
+            for i, df in frames.items():
+                df.to_csv(csvs[i], index=False)
+    print(f"Estratégia: {settings.strategy_info.name} · Dados: {provider} — "
+          + ", ".join(f"{len(df)} candles de {i}" for i, df in frames.items()))
+    report = backtest_frames(settings, frames, args.split)
     report["fonte_de_dados"] = provider
     md = format_markdown(report)
     print(md)

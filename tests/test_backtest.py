@@ -118,12 +118,14 @@ def test_run_full_backtest_downloads_history_through_market_data():
     df5 = make_5m(1200, seed=51, start=start)
     df15 = aggregate(df5)
     market = MarketData([], providers=[FakeProvider("historico", df5, df15, Clock(now))])
-    rep = run_full_backtest(Settings(), days=3, market=market)
+    rep = run_full_backtest(Settings(strategy="regras_5m"), days=3, market=market)
     assert rep["fonte_de_dados"] == "historico"
-    assert rep["candles_5m"] > 800
+    assert rep["estrategia"] == "Regras 5m + 15m"
+    assert rep["candles"]["5m"] > 800
 
 
-def test_cli_with_csv_files(tmp_path, capsys):
+def test_cli_with_csv_files(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("STRATEGY", "regras_5m")
     df5, df15 = _data(900)
     df5.to_csv(tmp_path / "btcusdt_5m.csv", index=False)
     df15.to_csv(tmp_path / "btcusdt_15m.csv", index=False)

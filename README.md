@@ -26,7 +26,7 @@ Robô que analisa o Bitcoin em tempo real e faz **operações simuladas** (paper
 | Função | Como funciona |
 |---|---|
 | Dados reais | Candles e volume de APIs **públicas** (sem login): Binance → OKX → Coinbase. Se uma falhar, usa a próxima. |
-| Atualização | A cada 20 segundos; analisa cada candle de **5 min** que fecha, com confirmação do gráfico de **15 min**. |
+| Atualização | A cada 20 segundos; analisa cada candle que fecha (**1 hora** na estratégia padrão; **5 min + 15 min** na original). |
 | Indicadores | EMA (médias móveis), RSI, MACD, volume relativo e ATR (volatilidade, usado no stop). |
 | Decisão | **COMPRA**, **VENDA** ou **AGUARDAR**, com o motivo de cada condição. Sem dados suficientes = AGUARDAR. |
 | Simulação | Saldo fictício de US$ 1.000, com taxa (0,1%) e slippage (0,05%) em cada execução. |
@@ -38,7 +38,19 @@ Robô que analisa o Bitcoin em tempo real e faz **operações simuladas** (paper
 
 ## 2. As regras de COMPRA, VENDA e AGUARDAR
 
-O robô opera só **comprado** (como quem compra Bitcoin à vista). **VENDA** significa encerrar a posição ou, se não houver posição, ficar de fora.
+O robô opera só **comprado** (como quem compra Bitcoin à vista). **VENDA** significa encerrar a posição ou, se não houver posição, ficar de fora. Existem duas estratégias; a variável `STRATEGY` escolhe qual roda.
+
+> **Resultado do estudo comparativo (out/2026):** nenhuma estratégia teve vantagem depois das taxas em dados de 2025–2026 (veja a seção 8). A de tendência de 1 hora foi a que **menos perdeu** e roda agora **em simulação, como teste**. Ela **não** foi aprovada e não deve ser usada com dinheiro real.
+
+### Estratégia em uso: Tendência 1h (`STRATEGY=tendencia_1h`, padrão)
+
+- **COMPRA:** quando a média EMA20 **cruza para cima** da EMA50 no gráfico de 1 hora (cruzamento novo).
+- **VENDA:** enquanto a EMA20 estiver **abaixo** da EMA50 (encerra a posição).
+- **AGUARDAR:** nos outros casos (por exemplo, tendência de alta já em andamento: o robô só compra no cruzamento).
+- **Stop-loss:** 3 × ATR(14) de 1 hora abaixo da entrada. **Sem alvo fixo:** a saída é pelo stop ou pelo sinal de VENDA.
+- Parâmetros congelados no período de desenvolvimento do estudo (abr–dez/2025).
+
+### Estratégia original: Regras 5m + 15m (`STRATEGY=regras_5m`)
 
 **COMPRA** — precisa de **todas** as 6 condições:
 
@@ -54,21 +66,25 @@ O robô opera só **comprado** (como quem compra Bitcoin à vista). **VENDA** si
 - Momento de baixa no 5 min: EMA9 abaixo da EMA21 **e** MACD negativo
 - Tendência de baixa no 15 min: EMA20 abaixo da EMA50 **e** preço abaixo da EMA50
 
-**AGUARDAR** — em todos os outros casos. Também é a resposta automática quando:
+Stop de 1,5 × ATR(14) de 5 min e alvo de 2 × a distância do stop. No estudo, os candles de 5 min (~0,13% do preço) foram menores que o custo de cada operação (0,30%), por isso essa estratégia perde com taxas.
 
-- há menos de 100 candles de 5 min ou de 15 min;
+### Dados insuficientes (as duas estratégias)
+
+A resposta é sempre **AGUARDAR** quando:
+
+- há menos de 100 candles;
 - faltam candles na sequência (falha da fonte de dados);
-- os dados estão atrasados mais de 10 minutos;
+- os dados estão atrasados (mais de 2 candles);
 - algum indicador ainda não pode ser calculado.
 
 Nesses casos o painel mostra "Dados insuficientes — nenhum sinal gerado" e o motivo exato.
 
-**Quando a ordem simulada é executada?** O sinal é calculado quando o candle de 5 min **fecha**. A ordem simulada é executada na **abertura do candle seguinte**, que é o primeiro preço disponível depois da decisão. O robô e o backtest seguem exatamente essa mesma regra, então o backtest não "vê o futuro".
+**Quando a ordem simulada é executada?** O sinal é calculado quando o candle **fecha**. A ordem simulada é executada na **abertura do candle seguinte**, que é o primeiro preço disponível depois da decisão. O robô e o backtest seguem exatamente essa mesma regra, então o backtest não "vê o futuro".
 
 ## 3. Gestão de risco
 
-- **Stop-loss:** entrada − 1,5 × ATR(14). O ATR mede o tamanho médio dos candles recentes.
-- **Alvo (take-profit):** 2 × a distância até o stop.
+- **Stop-loss:** entrada − 3 × ATR(14) de 1 hora (estratégia padrão) ou − 1,5 × ATR(14) de 5 min (original). O ATR mede o tamanho médio dos candles recentes.
+- **Alvo (take-profit):** sem alvo fixo na estratégia padrão; 2 × a distância até o stop na original.
 - **Risco de 1%:** o tamanho da posição é calculado para que, se o stop for atingido, a perda (já com taxas e slippage) seja no máximo 1% do saldo. A posição também nunca passa do dinheiro disponível (sem alavancagem).
 - **Trava diária de 3%:** se a perda do dia chegar a 3% do saldo inicial (US$ 30), a posição é fechada e o robô não abre novas operações até o dia seguinte (horário de Brasília). Perto do limite, o risco da próxima operação é reduzido para não ultrapassá-lo.
 - **Stop e alvo no mesmo candle:** considera-se o pior caso (stop).
@@ -248,7 +264,7 @@ Preços conferidos em outubro de 2026 em [render.com/pricing](https://render.com
 | Problema | O que fazer |
 |---|---|
 | Painel mostra "Sem dados" | As fontes de dados falharam. O robô tenta de novo sozinho a cada 20 s e **não opera** enquanto isso. Veja o "Registro de eventos e erros". Se persistir, confira se a região do Render é Frankfurt (a Binance bloqueia servidores nos EUA; nesse caso o robô usa OKX ou Coinbase). |
-| Sinal sempre "AGUARDAR" | É normal: as 6 condições de compra juntas são raras. Toque em "Ver as condições analisadas" para ver o que falta. |
+| Sinal quase sempre "AGUARDAR" ou "VENDA" | É normal. A estratégia de 1 hora só compra no **cruzamento** das médias (poucas vezes por semana); a original exige 6 condições juntas. Toque em "Ver as condições analisadas" para ver o que falta. |
 | Telegram não chega | Confira `TELEGRAM_BOT_TOKEN` e `TELEGRAM_CHAT_ID` (Render → Environment). Você precisa ter tocado em **Iniciar** no seu bot. Use o botão "Descobrir meu chat_id" no painel. |
 | Esqueci a senha do painel | Render → serviço → **Environment** → altere `DASHBOARD_PASSWORD` → **Save Changes**. |
 | "Muitas tentativas" no login | Depois de 5 senhas erradas, espere 5 minutos. |
@@ -271,7 +287,8 @@ Os segredos ficam **fora do código**, nas variáveis de ambiente do Render. Vej
 | `RISK_PER_TRADE` | Risco por operação (máx. `0.01`) | `0.01` |
 | `DAILY_LOSS_LIMIT` | Perda máxima no dia (máx. `0.03`) | `0.03` |
 | `FEE_RATE` / `SLIPPAGE_RATE` | Custos simulados por execução | `0.001` / `0.0005` |
-| `ATR_STOP_MULT` / `TAKE_PROFIT_R` | Distância do stop / tamanho do alvo | `1.5` / `2.0` |
+| `STRATEGY` | `tendencia_1h` (tendência 1 hora) ou `regras_5m` (regras originais) | `tendencia_1h` |
+| `ATR_STOP_MULT` / `TAKE_PROFIT_R` | Distância do stop / tamanho do alvo (`100` = sem alvo fixo) | 1h: `3.0` / `100` · 5m: `1.5` / `2.0` |
 | `DATA_PROVIDERS` | Ordem das fontes de dados | `binance,okx,coinbase` |
 | `TIMEZONE` | Fuso para "virar o dia" | `America/Sao_Paulo` |
 
@@ -286,7 +303,9 @@ app/
   config.py       configurações + travas de segurança (paper trading obrigatório)
   market_data.py  APIs públicas (Binance, OKX, Coinbase) com troca automática
   indicators.py   EMA, RSI, MACD, ATR, volume relativo (causais)
-  strategy.py     regras COMPRA / VENDA / AGUARDAR
+  strategy.py     regras originais (5m + 15m)
+  estrategias.py  estratégia de tendência 1h e escolha da estratégia (STRATEGY)
+  pesquisa.py     estudo comparativo pré-registrado (Actions → "Estudo comparativo de estratégias")
   analysis.py     monta o "retrato" de cada candle sem olhar o futuro (5m + 15m fechado)
   trader.py       corretora simulada: execução, stop/alvo, risco, trava diária
   engine.py       ciclo ao vivo, persistência, recuperação, alertas
@@ -311,7 +330,7 @@ DASHBOARD_PASSWORD=teste uvicorn app.web:create_app --factory --port 8000
 Garantias cobertas pelos testes:
 
 - **Sem vazamento do futuro:** o sinal de cada candle é idêntico com o histórico inteiro ou cortado naquele candle. O candle de 15 min só é usado depois de fechado. Mudar preços futuros não altera operações passadas. A escolha de parâmetros não muda se os dados da parte 2 mudarem.
-- **Mesmo comportamento ao vivo e no backtest:** o robô rodando candle a candle gera exatamente as mesmas operações que o backtest.
+- **Mesmo comportamento ao vivo e no backtest:** nas duas estratégias, o robô rodando candle a candle gera exatamente as mesmas operações que o backtest. O estudo comparativo usa o mesmo código da estratégia de 1 hora.
 - **Sem duplicatas e com recuperação:** repetir ciclos não duplica nada. Reiniciar no meio dá o mesmo resultado que rodar sem parar. Só um processo pode rodar o robô por banco de dados (trava de arquivo).
 - **Falhas:** troca de fonte de dados, bloqueio por região (HTTP 451) sem repetição inútil, todas as fontes fora sem operar, retomada após longa queda (só verifica stop/alvo nos candles perdidos), Telegram fora do ar com reenvio sem duplicar.
 - **Indicadores:** o RSI confere com os 19 valores do exemplo clássico de Wilder.

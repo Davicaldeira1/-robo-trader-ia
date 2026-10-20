@@ -23,7 +23,7 @@ def data():
 def make_engine(tmp_path, data, clock, providers=None, db="robo.db"):
     df5, df15 = data
     providers = providers or [FakeProvider("fonte1", df5, df15, clock)]
-    settings = Settings(data_dir=tmp_path, candles_limit=5000)
+    settings = Settings(data_dir=tmp_path, candles_limit=5000, strategy="regras_5m")
     store = Store(tmp_path / db)
     return Engine(settings, store, MarketData([], providers=providers), clock=clock)
 

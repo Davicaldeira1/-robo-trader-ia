@@ -23,8 +23,8 @@ import threading
 
 import numpy as np
 
-from .analysis import Analyzer
-from .config import Settings
+from .config import NO_TARGET_R, Settings
+from .estrategias import build_analysis
 from .market_data import MarketData
 from .metrics import trade_stats
 from .notifier import fmt_time, money
@@ -44,10 +44,13 @@ def describe_event(ev: dict, tz: str) -> tuple[str, str, str | None]:
     if kind == "opened":
         t = ev["trade"]
         notional = t["qty"] * t["entry_price"]
+        risk_dist = t["entry_price"] - t["stop"]
+        no_target = risk_dist > 0 and (t["take"] - t["entry_price"]) / risk_dist >= NO_TARGET_R
+        target = "sem alvo fixo (sai pelo stop ou pelo sinal de VENDA)" if no_target else money(t["take"])
         text = (f"🟢 COMPRA simulada BTC/USDT\n"
                 f"Preço: {money(t['entry_price'])}\n"
                 f"Quantidade: {t['qty']:.6f} BTC ({money(notional)})\n"
-                f"Stop-loss: {money(t['stop'])} | Alvo: {money(t['take'])}\n"
+                f"Stop-loss: {money(t['stop'])} | Alvo: {target}\n"
                 f"Risco máximo: {money(t['risk_amount'])}\n"
                 f"Motivo: {t['reason']}\n"
                 f"Horário: {fmt_time(ev['time'], tz)}\n"
@@ -76,9 +79,9 @@ def describe_event(ev: dict, tz: str) -> tuple[str, str, str | None]:
     return "info", str(ev), None
 
 
-def signal_alert(sig: Signal, paused: bool, tz: str) -> str:
+def signal_alert(sig: Signal, paused: bool, tz: str, strategy: str = "") -> str:
     icon = "📈" if sig.action == BUY else "📉"
-    lines = [f"{icon} Sinal de {sig.action} — BTC/USDT (5m)",
+    lines = [f"{icon} Sinal de {sig.action} — BTC/USDT" + (f" ({strategy})" if strategy else ""),
              f"Preço: {money(sig.price)}",
              f"Motivo: {sig.summary}"]
     lines += [f"• {r}" for r in sig.reasons]
@@ -103,7 +106,7 @@ class Engine:
         self.last_success_ms: int | None = None
         self.last_error: str | None = None
         self.provider: str | None = None
-        self.analyzer: Analyzer | None = None
+        self.analyzer = None  # análise da estratégia configurada (último ciclo)
         self.in_progress: Candle | None = None
         self.last_signal: Signal | None = None
         self.state = self._load_state()
@@ -145,20 +148,19 @@ class Engine:
         self.last_tick_ms = now
         s = self.settings
         try:
-            provider, frames = self.market.fetch_bundle([s.entry_interval, s.trend_interval], s.candles_limit)
+            provider, frames = self.market.fetch_bundle(list(s.intervals), s.candles_limit)
         except Exception as exc:  # noqa: BLE001
             self._data_failure(exc)
             return {"ok": False, "error": str(exc)}
 
-        df5, df15 = frames[s.entry_interval], frames[s.trend_interval]
-        closed5 = df5[df5["close_time"] < now].reset_index(drop=True)
-        open5 = df5[df5["close_time"] >= now]
-        closed15 = df15[df15["close_time"] < now].reset_index(drop=True)
-        if closed5.empty or closed15.empty:
+        closed = {k: df[df["close_time"] < now].reset_index(drop=True) for k, df in frames.items()}
+        open5 = frames[s.entry_interval][frames[s.entry_interval]["close_time"] >= now]
+        closed5 = closed[s.entry_interval]  # candles da ENTRADA (5m ou 1h, conforme a estratégia)
+        if any(df.empty for df in closed.values()):
             self._data_failure(RuntimeError("a fonte não retornou candles fechados"))
             return {"ok": False, "error": "sem candles fechados"}
 
-        analyzer = Analyzer(closed5, closed15, s.entry_interval, s.trend_interval)
+        analyzer = build_analysis(s, closed)
         in_progress = Candle.from_row(open5.iloc[-1]) if not open5.empty else None
         close_times = closed5["close_time"].to_numpy()
 
@@ -198,7 +200,8 @@ class Engine:
             alerts = []
             for sig in signals:
                 if sig.data_ok and sig.action != state.last_signal_action and sig.action in (BUY, SELL):
-                    alerts.append(signal_alert(sig, state.paused, self.params.timezone))
+                    alerts.append(signal_alert(sig, state.paused, self.params.timezone,
+                                               self.settings.strategy_info.name))
                 if sig.data_ok:
                     state.last_signal_action = sig.action
 
@@ -249,8 +252,10 @@ class Engine:
 
     def run_forever(self, stop: threading.Event) -> None:
         with self.store.transaction() as conn:
-            self.store.add_event(conn, "info", "Robô iniciado (modo PAPER TRADING).")
-            self.store.enqueue(conn, "🤖 Robô BTC/USDT iniciado em modo SIMULADO (paper trading).")
+            name = self.settings.strategy_info.name
+            self.store.add_event(conn, "info", f"Robô iniciado (modo PAPER TRADING). Estratégia: {name}.")
+            self.store.enqueue(conn, f"🤖 Robô BTC/USDT iniciado em modo SIMULADO (paper trading).\n"
+                                     f"Estratégia: {name}.")
         while not stop.is_set():
             try:
                 self.tick()
@@ -313,6 +318,8 @@ class Engine:
         day_loss = s.day_start_equity - equity if s.day else 0.0
         return {
             "paper_trading": True,
+            "strategy": {"key": self.settings.strategy, "name": self.settings.strategy_info.name,
+                         "intervals": list(self.settings.intervals)},
             "symbol": "BTC/USDT",
             "price": price,
             "provider": self.provider,
@@ -348,8 +355,8 @@ class Engine:
     def chart_data(self, interval: str) -> dict:
         analyzer, in_progress = self.analyzer, self.in_progress
         if analyzer is None:
-            return {"candles": [], "ema_fast": [], "ema_slow": [], "volume": []}
-        df = analyzer.ind5 if interval == self.settings.entry_interval else analyzer.ind15
+            return {"candles": [], "ema_fast": [], "ema_slow": [], "volume": [], "labels": []}
+        df, labels = analyzer.charts[interval]
         df = df.tail(200)
         to_s = lambda ms: int(ms) // 1000  # noqa: E731
         candles = [{"time": to_s(r.open_time), "open": r.open, "high": r.high, "low": r.low, "close": r.close}
@@ -365,5 +372,5 @@ class Engine:
             return [{"time": to_s(t), "value": float(v)} for t, v in zip(df["open_time"], df[col]) if v == v]
 
         return {"candles": candles, "ema_fast": line("ema_fast"), "ema_slow": line("ema_slow"), "volume": volume,
-                "labels": ["EMA9", "EMA21"] if interval == self.settings.entry_interval else ["EMA20", "EMA50"]}
+                "labels": labels}
 

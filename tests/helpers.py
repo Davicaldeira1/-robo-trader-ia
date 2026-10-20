@@ -54,9 +54,10 @@ class Clock:
 class FakeProvider(Provider):
     """Devolve os candles "conhecidos" até o horário do relógio (inclui o candle em andamento)."""
 
-    def __init__(self, name: str, df5: pd.DataFrame, df15: pd.DataFrame, clock: Clock):
+    def __init__(self, name: str, df5: pd.DataFrame, df15: pd.DataFrame, clock: Clock,
+                 df1h: pd.DataFrame | None = None):
         self.name = name
-        self.frames = {"5m": df5, "15m": df15}
+        self.frames = {"5m": df5, "15m": df15, "1h": df1h if df1h is not None else aggregate(df5, 3_600_000)}
         self.clock = clock
         self.fail = False
         self.calls = 0

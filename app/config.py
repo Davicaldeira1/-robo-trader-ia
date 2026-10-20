@@ -94,10 +94,27 @@ class TradingParams:
 
 
 @dataclass(frozen=True)
+class StrategyInfo:
+    key: str
+    name: str
+    intervals: tuple[str, ...]  # (entrada,) ou (entrada, tendência)
+    atr_stop_mult: float  # padrões congelados (ATR_STOP_MULT / TAKE_PROFIT_R podem sobrescrever)
+    take_profit_r: float
+
+
+# take_profit_r = 100 equivale a "sem alvo fixo": a saída é pelo stop ou pelo sinal de VENDA.
+STRATEGIES = {
+    "tendencia_1h": StrategyInfo("tendencia_1h", "Tendência 1h (EMA20/50)", ("1h",), 3.0, 100.0),
+    "regras_5m": StrategyInfo("regras_5m", "Regras 5m + 15m", ("5m", "15m"), 1.5, 2.0),
+}
+DEFAULT_STRATEGY = "tendencia_1h"
+NO_TARGET_R = 50.0  # alvo a partir de 50x o risco é tratado como "sem alvo fixo"
+
+
+@dataclass(frozen=True)
 class Settings:
     symbol: str = "BTCUSDT"
-    entry_interval: str = "5m"
-    trend_interval: str = "15m"
+    strategy: str = DEFAULT_STRATEGY
     candles_limit: int = 300
     poll_seconds: int = 20
     data_providers: tuple[str, ...] = ("binance", "okx", "coinbase")
@@ -108,6 +125,26 @@ class Settings:
     secret_key: str = ""
     engine_enabled: bool = True
     trading: TradingParams = field(default_factory=TradingParams)
+
+    def __post_init__(self) -> None:
+        if self.strategy not in STRATEGIES:
+            raise ValueError(f"STRATEGY inválida: {self.strategy!r}. Use: {', '.join(STRATEGIES)}.")
+
+    @property
+    def strategy_info(self) -> StrategyInfo:
+        return STRATEGIES[self.strategy]
+
+    @property
+    def intervals(self) -> tuple[str, ...]:
+        return self.strategy_info.intervals
+
+    @property
+    def entry_interval(self) -> str:
+        return self.intervals[0]
+
+    @property
+    def trend_interval(self) -> str | None:
+        return self.intervals[1] if len(self.intervals) > 1 else None
 
     @property
     def db_path(self) -> Path:
@@ -126,14 +163,18 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
     env = dict(os.environ if env is None else env)
     check_safety(env)
 
+    strategy = (env.get("STRATEGY") or DEFAULT_STRATEGY).strip().lower()
+    if strategy not in STRATEGIES:
+        raise ValueError(f"STRATEGY inválida: {strategy!r}. Use: {', '.join(STRATEGIES)}.")
+    info = STRATEGIES[strategy]
     trading = TradingParams(
         initial_balance=_float(env, "INITIAL_BALANCE", 1000.0),
         risk_per_trade=_float(env, "RISK_PER_TRADE", 0.01),
         daily_loss_limit=_float(env, "DAILY_LOSS_LIMIT", 0.03),
         fee_rate=_float(env, "FEE_RATE", 0.001),
         slippage_rate=_float(env, "SLIPPAGE_RATE", 0.0005),
-        atr_stop_mult=_float(env, "ATR_STOP_MULT", 1.5),
-        take_profit_r=_float(env, "TAKE_PROFIT_R", 2.0),
+        atr_stop_mult=_float(env, "ATR_STOP_MULT", info.atr_stop_mult),
+        take_profit_r=_float(env, "TAKE_PROFIT_R", info.take_profit_r),
         min_notional=_float(env, "MIN_NOTIONAL", 10.0),
         timezone=env.get("TIMEZONE", "America/Sao_Paulo") or "America/Sao_Paulo",
     )
@@ -143,6 +184,7 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         if p.strip()
     )
     return Settings(
+        strategy=strategy,
         poll_seconds=max(5, _int(env, "POLL_SECONDS", 20)),
         data_providers=providers or ("binance", "okx", "coinbase"),
         data_dir=Path(env.get("DATA_DIR", "data") or "data"),

@@ -27,7 +27,7 @@
 
   <main>
     <section class="card signal-card" aria-live="polite">
-      <div class="eyebrow">Sinal agora · entrada 5 min, tendência 15 min</div>
+      <div id="signal-eyebrow" class="eyebrow">Sinal agora</div>
       <div class="signal-row">
         <div id="signal-action" class="signal">—</div>
         <div class="price-box">
@@ -80,10 +80,7 @@
     <section class="card">
       <div class="card-head">
         <h2>Gráfico BTC/USDT</h2>
-        <div class="seg" role="group" aria-label="Tempo gráfico">
-          <button type="button" data-tf="5m" class="active">5 min</button>
-          <button type="button" data-tf="15m">15 min</button>
-        </div>
+        <div id="tf-buttons" class="seg" role="group" aria-label="Tempo gráfico"></div>
       </div>
       <div id="chart-legend" class="chart-legend"></div>
       <div id="chart" class="chart"></div>

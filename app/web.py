@@ -262,8 +262,9 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None,
         return json_safe(st)
 
     @app.get("/api/chart", dependencies=[Depends(require_auth)])
-    def api_chart(tf: str = "5m"):
-        if tf not in (settings.entry_interval, settings.trend_interval):
+    def api_chart(tf: str | None = None):
+        tf = tf or settings.entry_interval
+        if tf not in settings.intervals:
             raise HTTPException(400, "Tempo gráfico inválido.")
         data = engine.chart_data(tf)
         data["trades"] = store.trades(100)

@@ -13,12 +13,12 @@ PASSWORD = "senha-de-teste-123"
 ACTION = {"X-Requested-With": "painel"}
 
 
-def build(tmp_path, password=PASSWORD, start_background=False, telegram=None):
+def build(tmp_path, password=PASSWORD, start_background=False, telegram=None, strategy="regras_5m"):
     df5 = make_5m(600, seed=51)
     df15 = aggregate(df5)
     clock = Clock(int(df5["close_time"].iloc[500]) + 10_000)
     settings = Settings(data_dir=tmp_path, dashboard_password=password, secret_key="chave-teste",
-                        engine_enabled=start_background, poll_seconds=5)
+                        engine_enabled=start_background, poll_seconds=5, strategy=strategy)
     engine = Engine(settings, Store(settings.db_path),
                     MarketData([], providers=[FakeProvider("teste", df5, df15, clock)]), clock=clock)
     engine.tick()

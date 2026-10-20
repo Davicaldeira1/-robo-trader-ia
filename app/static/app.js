@@ -12,6 +12,9 @@ const when = (ms) => (ms ? new Date(ms).toLocaleString("pt-BR", { day: "2-digit"
 const TZ_SHIFT = -new Date().getTimezoneOffset() * 60; // gráficos mostram o horário do celular
 const local = (sec) => sec + TZ_SHIFT;
 const tone = (x) => (x > 0 ? "pos" : x < 0 ? "neg" : "");
+const TF_LABEL = { "5m": "5 min", "15m": "15 min", "1h": "1 hora" };
+const TF_SECONDS = { "5m": 300, "15m": 900, "1h": 3600 };
+const target = (r) => (r >= 50 ? "sem alvo fixo" : num(r, 1) + "× o risco");
 
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
@@ -70,6 +73,11 @@ function renderStatus(st) {
     warn("❗ " + short);
   }
 
+  // estratégia e tempos gráficos
+  const strat = st.strategy || { name: "", intervals: ["5m"] };
+  $("signal-eyebrow").textContent = "Sinal agora · " + strat.name;
+  renderTfButtons(strat.intervals);
+
   // sinal
   const sig = st.signal;
   const act = $("signal-action");
@@ -121,7 +129,7 @@ function renderStatus(st) {
       ["Entrada", money(p.entry_price) + " · " + when(p.entry_time)],
       ["Quantidade", num(p.qty, 6) + " BTC (" + money(p.notional) + ")"],
       ["Stop-loss", money(p.stop)],
-      ["Alvo", money(p.take)],
+      ["Alvo", st.params.take_profit_r >= 50 ? "sem alvo fixo" : money(p.take)],
       ["Risco máximo", money(p.risk_amount)],
       ["Resultado agora", signed(p.unrealized)],
     ];
@@ -147,12 +155,23 @@ function renderStatus(st) {
     ["Risco por operação", num(p.risk_per_trade * 100, 1) + "% do saldo"],
     ["Perda máxima no dia", num(p.daily_loss_limit * 100, 1) + "% do saldo inicial (" + money(st.daily_loss_cap) + ")"],
     ["Stop-loss", num(p.atr_stop_mult, 1) + "× ATR(14) abaixo da entrada"],
-    ["Alvo", num(p.take_profit_r, 1) + "× a distância do stop"],
+    ["Estratégia", strat.name],
+    ["Alvo", p.take_profit_r >= 50 ? "sem alvo fixo (sai pelo stop ou pelo sinal de VENDA)"
+      : num(p.take_profit_r, 1) + "× a distância do stop"],
     ["Taxa simulada", num(p.fee_rate * 100, 2) + "% por execução"],
     ["Slippage simulado", num(p.slippage_rate * 100, 2) + "% por execução"],
     ["Erros nas últimas 24 h", String(st.erros_24h)],
   ];
   $("rules").replaceChildren(...rules.flatMap(([k, v]) => [el("dt", { text: k }), el("dd", { text: v })]));
+}
+
+function renderTfButtons(intervals) {
+  const box = $("tf-buttons");
+  if (box.dataset.tfs === intervals.join(",")) return;
+  box.dataset.tfs = intervals.join(",");
+  if (!intervals.includes(currentTf)) currentTf = intervals[0];
+  box.replaceChildren(...intervals.map((tf) => el("button",
+    { type: "button", "data-tf": tf, class: tf === currentTf ? "active" : "" }, TF_LABEL[tf] || tf)));
 }
 
 function checkItem(c) {
@@ -162,7 +181,7 @@ function checkItem(c) {
 
 /* ---------------------------------------------------------- gráficos */
 let chart, candleSeries, emaFast, emaSlow, volSeries, equityChart, equitySeries, priceLines = [];
-let currentTf = "5m";
+let currentTf = null;
 let chartLabels = ["EMA9", "EMA21"];
 let lastCandle = null;
 
@@ -228,6 +247,7 @@ function renderLegend(bar, fast, slow) {
 
 async function refreshChart() {
   if (!chart) return;
+  if (!currentTf) return;
   const data = await api("/api/chart?tf=" + currentTf);
   chartLabels = data.labels || chartLabels;
   const candles = data.candles.map((c) => ({ ...c, time: local(c.time) }));
@@ -240,7 +260,7 @@ async function refreshChart() {
   renderLegend(lastCandle, null, null);
 
   // marcadores das operações simuladas (alinhados ao candle do gráfico)
-  const step = currentTf === "5m" ? 300 : 900;
+  const step = TF_SECONDS[currentTf] || 300;
   const first = candles.length ? candles[0].time : Infinity;
   const markers = [];
   const snap = (ms) => local(Math.floor(ms / 1000 / step) * step);
@@ -260,7 +280,8 @@ async function refreshChart() {
   const pos = lastStatus && lastStatus.position;
   if (pos) {
     const line = (price, title, color) => candleSeries.createPriceLine({ price, title, color, lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true });
-    priceLines = [line(pos.entry_price, "Entrada", cssVar("--muted")), line(pos.stop, "Stop", cssVar("--down")), line(pos.take, "Alvo", cssVar("--up"))];
+    priceLines = [line(pos.entry_price, "Entrada", cssVar("--muted")), line(pos.stop, "Stop", cssVar("--down"))];
+    if (lastStatus.params.take_profit_r < 50) priceLines.push(line(pos.take, "Alvo", cssVar("--up")));
   }
 }
 
@@ -320,7 +341,7 @@ function btPart(title, part) {
     el("tbody", {}, ...metricRows(part.metricas).map(([k, v]) => el("tr", {}, el("td", { text: k }), el("td", { text: v })))));
   return el("div", { class: "bt-part" },
     el("h3", { text: title }),
-    el("p", { class: "muted small", text: `${part.inicio} → ${part.fim} · stop ${part.parametros.atr_stop_mult}× ATR · alvo ${part.parametros.take_profit_r}× risco` }),
+    el("p", { class: "muted small", text: `${part.inicio} → ${part.fim} · stop ${part.parametros.atr_stop_mult}× ATR · alvo ${target(part.parametros.take_profit_r)}` }),
     el("div", { class: "bt-scroll" }, table));
 }
 
@@ -389,11 +410,13 @@ function bind() {
         ...r.chats.map((c) => el("p", {}, el("strong", { text: "chat_id: " + c.chat_id }), ` — ${c.nome || ""} (${c.tipo || ""})`)));
     } catch (e) { $("tg-result").textContent = e.message; }
   });
-  document.querySelectorAll(".seg button").forEach((b) => b.addEventListener("click", () => {
-    document.querySelectorAll(".seg button").forEach((x) => x.classList.toggle("active", x === b));
+  $("tf-buttons").addEventListener("click", (ev) => {
+    const b = ev.target.closest("button[data-tf]");
+    if (!b) return;
     currentTf = b.dataset.tf;
+    document.querySelectorAll("#tf-buttons button").forEach((x) => x.classList.toggle("active", x === b));
     refreshChart().catch(() => {});
-  }));
+  });
 }
 
 async function refreshStatus() { renderStatus(await api("/api/status")); }

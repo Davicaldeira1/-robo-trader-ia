@@ -38,10 +38,11 @@ import pandas as pd
 from .analysis import Analyzer
 from .backtest import BacktestResult, iso, precompute_signals, simulate
 from .config import TradingParams, load_settings
+from .estrategias import trend_signals
 from .indicators import add_indicators
-from .market_data import MarketData, interval_ms
+from .market_data import MarketData
 from .metrics import json_safe
-from .strategy import BUY, SELL, WAIT, Signal
+from .strategy import BUY, WAIT, Signal
 
 log = logging.getLogger(__name__)
 
@@ -106,32 +107,6 @@ def check_periods(periods: dict[str, tuple[str, str]], excluded=EXCLUDED) -> Non
 
 
 # ------------------------------------------------------------------ sinais
-def trend_signals(df: pd.DataFrame, interval: str) -> tuple[pd.DataFrame, list[Signal]]:
-    """Estratégia D: cruzamento de EMA20/EMA50 no próprio tempo gráfico (sem olhar o futuro)."""
-    ind = add_indicators(df.reset_index(drop=True), 20, 50)
-    fast, slow = ind["ema_fast"].to_numpy(), ind["ema_slow"].to_numpy()
-    close, atr_ = ind["close"].to_numpy(), ind["atr"].to_numpy()
-    times = ind["close_time"].to_numpy(dtype=np.int64)
-    missing = np.zeros(len(ind), dtype=np.int64)
-    missing[1:] = np.diff(ind["open_time"].to_numpy(dtype=np.int64)) // interval_ms(interval) - 1
-    cum = np.cumsum(missing)
-    signals = []
-    for i in range(len(ind)):
-        window_gaps = cum[i] - cum[max(0, i - 99)]
-        values = (fast[i], slow[i], atr_[i], fast[i - 1] if i else np.nan, slow[i - 1] if i else np.nan)
-        ok = i + 1 >= 100 and window_gaps == 0 and not any(np.isnan(v) for v in values) and atr_[i] > 0
-        t, price = int(times[i]), float(close[i])
-        if not ok:
-            signals.append(Signal(WAIT, "Dados insuficientes", [], t, price, float(atr_[i]), False))
-        elif fast[i] > slow[i] and fast[i - 1] <= slow[i - 1]:
-            signals.append(Signal(BUY, "EMA20 cruzou acima da EMA50 (1h)", [], t, price, float(atr_[i]), True))
-        elif fast[i] < slow[i]:
-            signals.append(Signal(SELL, "EMA20 abaixo da EMA50 (1h)", [], t, price, float(atr_[i]), True))
-        else:
-            signals.append(Signal(WAIT, "Sem cruzamento novo", [], t, price, float(atr_[i]), True))
-    return ind, signals
-
-
 def apply_cost_filter(signals: list[Signal], params: TradingParams) -> list[Signal]:
     """Estratégia B: troca COMPRA por AGUARDAR quando o alvo não paga 2x o custo de ida e volta."""
     round_trip = 2 * params.fee_rate + 2 * params.slippage_rate
