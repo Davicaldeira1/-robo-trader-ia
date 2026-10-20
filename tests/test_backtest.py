@@ -151,3 +151,14 @@ def test_daily_loss_never_exceeds_3pct_of_initial_balance():
             assert day_start[day] - eq <= 30.0 + 1e-6
             prev = eq
     assert total_trades > 0
+
+
+def test_report_warns_when_every_combination_lost_and_that_live_robot_is_unchanged():
+    for seed in (51, 4, 8):
+        df5, df15 = _data(1500, seed=seed)
+        rep = walk_forward(df5, df15, TradingParams())
+        all_lost = all(row["retorno_pct"] <= 0 for row in rep["dentro_da_amostra"])
+        optimized = any(row["operacoes"] >= 5 for row in rep["dentro_da_amostra"])
+        warned = any("menos ruim" in n for n in rep["avisos"])
+        assert warned == (all_lost and optimized), seed
+        assert any("robô ao vivo usa ATR_STOP_MULT" in n for n in rep["avisos"])

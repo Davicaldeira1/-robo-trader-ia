@@ -150,6 +150,9 @@ def walk_forward(df5: pd.DataFrame, df15: pd.DataFrame, base: TradingParams,
     notes = []
     if eligible:
         chosen, chosen_is = max(eligible, key=lambda pr: pr[1].metrics["return_pct"])
+        if all(r.metrics["return_pct"] <= 0 for _, r in in_sample):
+            notes.append(f"Todas as {len(in_sample)} combinações perderam dinheiro na parte 1: o parâmetro "
+                         "'escolhido' é só o menos ruim e não há evidência de vantagem.")
     else:
         chosen = base
         chosen_is = simulate(analyzer, signals, base, start_ms, split_ms - 1)
@@ -169,6 +172,9 @@ def walk_forward(df5: pd.DataFrame, df15: pd.DataFrame, base: TradingParams,
     if total_oos < 30:
         notes.append(f"Apenas {total_oos} operações fora da amostra: amostra pequena, "
                      "resultado pouco confiável estatisticamente.")
+    notes.append(f"Os parâmetros escolhidos aqui ({chosen.atr_stop_mult}× ATR / {chosen.take_profit_r}×) só "
+                 "aparecem no relatório: o robô ao vivo usa ATR_STOP_MULT e TAKE_PROFIT_R da configuração "
+                 f"(hoje {base.atr_stop_mult}× ATR / {base.take_profit_r}×).")
     notes.append("Resultados passados não garantem resultados futuros.")
 
     report = {

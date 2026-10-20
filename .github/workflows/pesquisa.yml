@@ -1,0 +1,38 @@
+name: Estudo comparativo de estratégias
+
+# Só roda quando você toca em "Run workflow" (Actions → Estudo comparativo de estratégias).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  estudo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependências
+        run: pip install -r requirements-dev.txt
+
+      - name: Testes do estudo
+        run: python -m pytest tests/test_pesquisa.py tests/test_backtest.py -v
+
+      - name: Rodar o estudo (dados reais, ~18 meses)
+        run: |
+          python -m app.pesquisa --json pesquisa.json --markdown pesquisa.md
+          cat pesquisa.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: estudo-comparativo
+          path: pesquisa.*
+          if-no-files-found: ignore
